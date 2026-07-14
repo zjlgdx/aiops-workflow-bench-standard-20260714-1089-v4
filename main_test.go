@@ -79,6 +79,133 @@ func TestEmptyTitleFailsWithoutModifyingDatabase(t *testing.T) {
 	}
 }
 
+func TestDoneAndFilteredListAcrossProcessInvocations(t *testing.T) {
+	binary := buildTodo(t)
+	database := filepath.Join(t.TempDir(), "todos.json")
+
+	for _, title := range []string{"Buy milk", "Walk dog"} {
+		if _, stderr, err := runTodo(binary, database, "add", title); err != nil {
+			t.Fatalf("add %q failed: %v\nstderr: %s", title, err, stderr)
+		}
+	}
+
+	for attempt := 1; attempt <= 2; attempt++ {
+		stdout, stderr, err := runTodo(binary, database, "done", "2")
+		if err != nil {
+			t.Fatalf("done attempt %d failed: %v\nstderr: %s", attempt, err, stderr)
+		}
+		if stdout != "completed 2\n" {
+			t.Fatalf("done attempt %d stdout = %q, want %q", attempt, stdout, "completed 2\n")
+		}
+		if stderr != "" {
+			t.Fatalf("done attempt %d stderr = %q, want empty", attempt, stderr)
+		}
+	}
+
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{name: "all", args: []string{"list"}, want: "1\tactive\tBuy milk\n2\tdone\tWalk dog\n"},
+		{name: "active", args: []string{"list", "--status", "active"}, want: "1\tactive\tBuy milk\n"},
+		{name: "done", args: []string{"list", "--status", "done"}, want: "2\tdone\tWalk dog\n"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			stdout, stderr, err := runTodo(binary, database, test.args...)
+			if err != nil {
+				t.Fatalf("list failed: %v\nstderr: %s", err, stderr)
+			}
+			if stdout != test.want {
+				t.Fatalf("list stdout = %q, want %q", stdout, test.want)
+			}
+			if stderr != "" {
+				t.Fatalf("list stderr = %q, want empty", stderr)
+			}
+		})
+	}
+}
+
+func TestDoneRejectsMissingAndMalformedIDsWithoutModifyingDatabase(t *testing.T) {
+	binary := buildTodo(t)
+	database := filepath.Join(t.TempDir(), "todos.json")
+
+	if _, stderr, err := runTodo(binary, database, "add", "Keep me"); err != nil {
+		t.Fatalf("seed add failed: %v\nstderr: %s", err, stderr)
+	}
+
+	tests := []struct {
+		name       string
+		args       []string
+		wantStderr string
+	}{
+		{name: "omitted", args: []string{"done"}, wantStderr: "done requires an ID\n"},
+		{name: "not a number", args: []string{"done", "abc"}, wantStderr: "invalid todo ID \"abc\"\n"},
+		{name: "not positive", args: []string{"done", "0"}, wantStderr: "invalid todo ID \"0\"\n"},
+		{name: "not found", args: []string{"done", "999"}, wantStderr: "todo 999 not found\n"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			before, err := os.ReadFile(database)
+			if err != nil {
+				t.Fatalf("read database before invalid done: %v", err)
+			}
+
+			stdout, stderr, err := runTodo(binary, database, test.args...)
+			if err == nil {
+				t.Fatal("invalid done succeeded, want non-zero exit")
+			}
+			if stdout != "" {
+				t.Fatalf("invalid done stdout = %q, want empty", stdout)
+			}
+			if stderr != test.wantStderr {
+				t.Fatalf("invalid done stderr = %q, want %q", stderr, test.wantStderr)
+			}
+
+			after, err := os.ReadFile(database)
+			if err != nil {
+				t.Fatalf("read database after invalid done: %v", err)
+			}
+			if !bytes.Equal(after, before) {
+				t.Fatalf("invalid done modified database\nbefore: %s\nafter: %s", before, after)
+			}
+		})
+	}
+}
+
+func TestListRejectsUnsupportedStatusWithoutModifyingDatabase(t *testing.T) {
+	binary := buildTodo(t)
+	database := filepath.Join(t.TempDir(), "todos.json")
+
+	if _, stderr, err := runTodo(binary, database, "add", "Keep me"); err != nil {
+		t.Fatalf("seed add failed: %v\nstderr: %s", err, stderr)
+	}
+	before, err := os.ReadFile(database)
+	if err != nil {
+		t.Fatalf("read database before invalid list: %v", err)
+	}
+
+	stdout, stderr, err := runTodo(binary, database, "list", "--status", "blocked")
+	if err == nil {
+		t.Fatal("unsupported status succeeded, want non-zero exit")
+	}
+	if stdout != "" {
+		t.Fatalf("unsupported status stdout = %q, want empty", stdout)
+	}
+	if stderr != "unsupported status \"blocked\"; want active or done\n" {
+		t.Fatalf("unsupported status stderr = %q", stderr)
+	}
+
+	after, err := os.ReadFile(database)
+	if err != nil {
+		t.Fatalf("read database after invalid list: %v", err)
+	}
+	if !bytes.Equal(after, before) {
+		t.Fatalf("unsupported status modified database\nbefore: %s\nafter: %s", before, after)
+	}
+}
+
 func buildTodo(t *testing.T) string {
 	t.Helper()
 
