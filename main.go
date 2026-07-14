@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -28,7 +29,17 @@ func run(args []string) int {
 		return addTodo(args[1])
 	}
 	if len(args) == 1 && args[0] == "list" {
-		return listTodos()
+		return listTodos("")
+	}
+	if len(args) == 3 && args[0] == "list" && args[1] == "--status" {
+		return listTodos(args[2])
+	}
+	if len(args) == 1 && args[0] == "done" {
+		fmt.Fprintln(os.Stderr, "done requires an ID")
+		return 2
+	}
+	if len(args) == 2 && args[0] == "done" {
+		return completeTodo(args[1])
 	}
 
 	fmt.Fprintln(os.Stderr, "usage: todo <add|list|done>")
@@ -68,7 +79,48 @@ func addTodo(title string) int {
 	return 0
 }
 
-func listTodos() int {
+func completeTodo(rawID string) int {
+	id, err := strconv.Atoi(rawID)
+	if err != nil || id <= 0 {
+		fmt.Fprintf(os.Stderr, "invalid todo ID %q\n", rawID)
+		return 1
+	}
+
+	path, ok := databasePath()
+	if !ok {
+		return 1
+	}
+	todos, err := loadTodos(path)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+
+	for index := range todos {
+		if todos[index].ID != id {
+			continue
+		}
+		if todos[index].Status != "done" {
+			todos[index].Status = "done"
+			if err := saveTodos(path, todos); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				return 1
+			}
+		}
+		fmt.Printf("completed %d\n", id)
+		return 0
+	}
+
+	fmt.Fprintf(os.Stderr, "todo %d not found\n", id)
+	return 1
+}
+
+func listTodos(status string) int {
+	if status != "" && status != "active" && status != "done" {
+		fmt.Fprintf(os.Stderr, "unsupported status %q; want active or done\n", status)
+		return 1
+	}
+
 	path, ok := databasePath()
 	if !ok {
 		return 1
@@ -83,6 +135,9 @@ func listTodos() int {
 		return todos[i].ID < todos[j].ID
 	})
 	for _, item := range todos {
+		if status != "" && item.Status != status {
+			continue
+		}
 		fmt.Printf("%d\t%s\t%s\n", item.ID, item.Status, item.Title)
 	}
 	return 0
